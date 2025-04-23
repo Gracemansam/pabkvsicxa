@@ -31,10 +31,11 @@
         </developer>
     </developers>
 
+
     <scm>
-        <connection>scm:git:git://github.com/Gracemansam/pabkvsicxa</connection>
-        <developerConnection>scm:git:ssh://github.com/Gracemansam/pabkvsicxa</developerConnection>
-        <url>https://github.com/Gracemansam/pabkvsicxa</url>
+        <connection>scm:git:git://github.com/Gracemansam/pabkvsicxa.git</connection>
+        <developerConnection>scm:git:ssh://github.com/Gracemansam/pabkvsicxa.git</developerConnection>
+        <url>https://github.com/Gracemansam/pabkvsicxa/tree/main</url>
     </scm>
     <properties>
         <java.version>21</java.version>
