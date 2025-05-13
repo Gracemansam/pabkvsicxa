@@ -9,5 +9,5 @@ public class LamiplusCommonApiApplication {
     public static void main(String[] args) {
         SpringApplication.run(LamiplusCommonApiApplication.class, args);
     }
-
+ // Gracemansam123
 }
