@@ -202,7 +202,7 @@ public class DefaultPropertiesLoader implements PropertiesLoader {
         }
 
         pluginProps.setId(getProperty(properties, "plugin.id", "plugin.id", "patient-management"));
-        pluginProps.setName(getProperty(properties, "plugin.name", "plugin.name", "Patient Management"));
+        pluginProps.setName(getProperty(properties, "plugin.name", "plugin.name", "patient"));
         pluginProps.setDescription(getProperty(properties, "plugin.description", "plugin.description",
                 "A plugin for managing patient records with full CRUD operations"));
         pluginProps.setVersion(getProperty(properties, "plugin.version", "plugin.version", "1.0.0"));
@@ -263,6 +263,9 @@ public class DefaultPropertiesLoader implements PropertiesLoader {
 
         pluginProps.setPermissions(permissions);
         return pluginProps;
+    }
+    public PluginProperties buildPluginPropertiesFromProperties(Properties properties) {
+        return buildPluginProperties(properties);
     }
 
 

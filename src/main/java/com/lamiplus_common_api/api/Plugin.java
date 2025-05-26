@@ -13,15 +13,11 @@ public interface Plugin {
 
     void initialize(PluginInfo info);
 
-
     void start();
-
 
     void stop();
 
-
     String getDescription();
-
 
     String getVersion();
 
@@ -32,10 +28,13 @@ public interface Plugin {
     List<String> getDependencies();
 
 
+    default String getBasePath() {
+        return getPluginId().toLowerCase();
+    }
+
     default List<PluginPermission> getSecurityPermissions() {
         return new ArrayList<>();
     }
-
 
     default List<String> getRequiredRoles() {
         return new ArrayList<>();
@@ -45,10 +44,10 @@ public interface Plugin {
         return new ArrayList<>();
     }
 
-
     default List<String> getAuditableResourceTypes() {
         return new ArrayList<>();
     }
+
     default Logger getLogger() {
         return new PluginLogger(getPluginId());
     }

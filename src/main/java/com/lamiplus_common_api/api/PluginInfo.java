@@ -21,9 +21,19 @@ public class PluginInfo {
     private String description;
     private String author;
 
+    private String frontendPath;
+
     private List<String> dependencies  = new ArrayList<>();
 
     private String jarFile;
+
+    public String getFrontendPath() {
+        return frontendPath;
+    }
+
+    public void setFrontendPath(String frontendPath) {
+        this.frontendPath = frontendPath;
+    }
 
     private List<Class<?>> entities = new ArrayList<>();
 
