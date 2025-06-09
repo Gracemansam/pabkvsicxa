@@ -55,4 +55,12 @@ public interface Plugin {
     default String getPluginId() {
         return "unknown";
     }
+
+    default PluginType getPluginType() {
+        return PluginType.SERVICE;
+    }
+
+    default boolean isAutoLoad() {
+        return getPluginType() == PluginType.BASE;
+    }
 }

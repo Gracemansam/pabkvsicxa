@@ -35,6 +35,21 @@ public class PluginInfo {
         this.frontendPath = frontendPath;
     }
 
+    private PluginType pluginType = PluginType.SERVICE;
+    private boolean autoLoad = false;
+    private boolean loaded = false;
+
+
+
+    public boolean isBase() {
+        return pluginType == PluginType.BASE;
+    }
+
+    public boolean isService() {
+        return pluginType == PluginType.SERVICE;
+    }
+
+
     private List<Class<?>> entities = new ArrayList<>();
 
     private List<Class<?>> controllers = new ArrayList<>();
@@ -53,6 +68,15 @@ public class PluginInfo {
     public boolean isActive() {
         return status == PluginStatus.ACTIVE;
     }
+
+    public PluginType getPluginType() { return pluginType; }
+    public void setPluginType(PluginType pluginType) { this.pluginType = pluginType; }
+
+    public boolean isAutoLoad() { return autoLoad; }
+    public void setAutoLoad(boolean autoLoad) { this.autoLoad = autoLoad; }
+
+    public boolean isLoaded() { return loaded; }
+    public void setLoaded(boolean loaded) { this.loaded = loaded; }
 
     public String getPluginId() {
         return pluginId;
