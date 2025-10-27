@@ -14,6 +14,8 @@ import java.util.List;
 public class PluginInfo {
 
     private String pluginId;
+
+
     private String name;
 
     private String version;
