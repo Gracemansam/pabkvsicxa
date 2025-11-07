@@ -52,6 +52,19 @@ public class PluginInfo {
     }
 
 
+
+
+    private Class<?> pluginMainClass;
+
+    public Class<?> getPluginMainClass() {
+        return pluginMainClass;
+    }
+
+    public void setPluginMainClass(Class<?> pluginMainClass) {
+        this.pluginMainClass = pluginMainClass;
+    }
+
+
     private List<Class<?>> entities = new ArrayList<>();
 
     private List<Class<?>> controllers = new ArrayList<>();

@@ -10,4 +10,5 @@ public class LamiplusCommonApiApplication {
         SpringApplication.run(LamiplusCommonApiApplication.class, args);
     }
  // Gracemansam123@
+
 }
