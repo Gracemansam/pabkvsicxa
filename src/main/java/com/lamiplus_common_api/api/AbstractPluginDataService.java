@@ -1,7 +1,11 @@
 package com.lamiplus_common_api.api;
 
 
+
+import com.lamiplus_common_api.api.PluginDataService;
+import com.lamiplus_common_api.api.PluginDataServiceRegistry;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.Nullable;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -17,12 +21,15 @@ public abstract class AbstractPluginDataService implements PluginDataService {
 
     protected final PluginDataServiceRegistry dataServiceRegistry;
 
+
     protected abstract String getPluginId();
+
 
     @Override
     public abstract String getEntityName();
 
-    protected AbstractPluginDataService(PluginDataServiceRegistry dataServiceRegistry) {
+
+    protected AbstractPluginDataService(@Nullable PluginDataServiceRegistry dataServiceRegistry) {
         this.dataServiceRegistry = dataServiceRegistry;
     }
 
@@ -37,6 +44,7 @@ public abstract class AbstractPluginDataService implements PluginDataService {
                     getPluginId(), getEntityName());
         }
     }
+
 
 
     @Override
@@ -111,7 +119,9 @@ public abstract class AbstractPluginDataService implements PluginDataService {
         return Optional.empty();
     }
 
-
+    // ========================
+    // TYPE CONVERSION HELPERS
+    // ========================
 
     protected UUID toUuid(Object value) {
         if (value == null) return null;
