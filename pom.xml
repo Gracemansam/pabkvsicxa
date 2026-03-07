@@ -15,11 +15,10 @@
 
     <groupId>io.github.gracemansam</groupId>
     <artifactId>lamiplus_common_api</artifactId>
-    <version>1.9.20</version>
+    <version>1.9.21</version>
     <name>lamiplus_common_api</name>
     <description>lamiplus_common_api</description>
-    <url>https://github.com/Gracemansam/pabkvsicxa</url>
-
+    <url>https://github.com/Data-Fi-Nigeria-LAMISPlus/pabkvsicxa</url>
     <licenses>
         <license>
             <name>The Apache License, Version 2.0</name>
@@ -36,9 +35,9 @@
     </developers>
 
     <scm>
-        <connection>scm:git:git://github.com/Gracemansam/pabkvsicxa.git</connection>
-        <developerConnection>scm:git:ssh://github.com/Gracemansam/pabkvsicxa.git</developerConnection>
-        <url>https://github.com/Gracemansam/pabkvsicxa/tree/main</url>
+        <connection>scm:git:git://github.com/Data-Fi-Nigeria-LAMISPlus/pabkvsicxa.git</connection>
+        <developerConnection>scm:git:ssh://github.com/Data-Fi-Nigeria-LAMISPlus/pabkvsicxa.git</developerConnection>
+        <url>https://github.com/Data-Fi-Nigeria-LAMISPlus/pabkvsicxa/tree/main</url>
     </scm>
 
     <!-- ========================= -->
@@ -96,6 +95,14 @@
 
     </dependencies>
 
+
+    <distributionManagement>
+        <repository>
+            <id>github</id>
+            <url>https://maven.pkg.github.com/Data-Fi-Nigeria-LAMISPlus/pabkvsicxa</url>
+        </repository>
+    </distributionManagement>
+
     <!-- ========================= -->
     <!-- Build & Plugins -->
     <!-- ========================= -->
@@ -121,15 +128,15 @@
             </plugin>
 
             <!-- Maven Central Publishing -->
-            <plugin>
-                <groupId>org.sonatype.central</groupId>
-                <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>0.5.0</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <publishingServerId>central</publishingServerId>
-                </configuration>
-            </plugin>
+<!--            <plugin>-->
+<!--                <groupId>org.sonatype.central</groupId>-->
+<!--                <artifactId>central-publishing-maven-plugin</artifactId>-->
+<!--                <version>0.5.0</version>-->
+<!--                <extensions>true</extensions>-->
+<!--                <configuration>-->
+<!--                    <publishingServerId>central</publishingServerId>-->
+<!--                </configuration>-->
+<!--            </plugin>-->
             <!-- Javadoc -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -166,20 +173,20 @@
             </plugin>
 
             <!-- GPG Signing -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-gpg-plugin</artifactId>
-                <version>1.6</version>
-                <executions>
-                    <execution>
-                        <id>sign-artifacts</id>
-                        <phase>verify</phase>
-                        <goals>
-                            <goal>sign</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
+<!--            <plugin>-->
+<!--                <groupId>org.apache.maven.plugins</groupId>-->
+<!--                <artifactId>maven-gpg-plugin</artifactId>-->
+<!--                <version>1.6</version>-->
+<!--                <executions>-->
+<!--                    <execution>-->
+<!--                        <id>sign-artifacts</id>-->
+<!--                        <phase>verify</phase>-->
+<!--                        <goals>-->
+<!--                            <goal>sign</goal>-->
+<!--                        </goals>-->
+<!--                    </execution>-->
+<!--                </executions>-->
+<!--            </plugin>-->
 
         </plugins>
     </build>
