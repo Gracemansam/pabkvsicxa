@@ -1,5 +1,6 @@
 package com.lamiplus_common_api.exception;
 
+import com.lamiplus_common_api.api.PluginException;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -45,7 +46,9 @@ public class GlobalExceptionHandler {
     @Value("${spring.profiles.active:dev}")
     private String activeProfile;
 
-
+    // ============================================================================
+    // UTILITIES
+    // ============================================================================
 
     private boolean isDevEnvironment() {
         return "dev".equals(activeProfile) || "local".equals(activeProfile) || log.isDebugEnabled();
@@ -67,6 +70,28 @@ public class GlobalExceptionHandler {
         return "Unknown constraint";
     }
 
+    /**
+     * Strips the exception class name prefix from a message.
+     * e.g. "PluginException: Cannot install plugin" → "Cannot install plugin"
+     * e.g. "IllegalStateException: Patient already exists" → "Patient already exists"
+     */
+    private String cleanMessage(Exception ex) {
+        String message = ex.getMessage();
+        if (message == null) return "An unexpected error occurred";
+        // Only strip if the prefix looks like a class name (no spaces before the colon)
+        if (message.contains(": ")) {
+            int colonIndex = message.indexOf(": ");
+            String prefix = message.substring(0, colonIndex);
+            if (!prefix.contains(" ")) {
+                return message.substring(colonIndex + 2);
+            }
+        }
+        return message;
+    }
+
+    // ============================================================================
+    // BUSINESS & PLUGIN EXCEPTION HANDLERS
+    // ============================================================================
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<List<ErrorModel>> handleBusinessException(
@@ -89,7 +114,23 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(bex.getErrors(), status);
     }
 
+    @ExceptionHandler(PluginException.class)
+    public ResponseEntity<List<ErrorModel>> handlePluginException(
+            PluginException ex,
+            HttpServletRequest request) {
 
+        log.error("Plugin exception at {}: {}", request.getRequestURI(), ex.getMessage());
+
+        List<ErrorModel> errors = List.of(
+                new ErrorModel("PLUGIN_ERROR", ex.getMessage(), null)
+        );
+
+        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+
+    // ============================================================================
+    // VALIDATION & INPUT EXCEPTION HANDLERS
+    // ============================================================================
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<List<ErrorModel>> handleValidationException(
@@ -157,13 +198,33 @@ public class GlobalExceptionHandler {
 
         log.warn("Invalid JSON request at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        String message = isDevEnvironment()
-                ? "Invalid JSON: " + ex.getMostSpecificCause().getMessage()
-                : "Invalid request format";
+        String userMessage;
+        Throwable cause = ex.getCause();
 
+        if (cause instanceof com.fasterxml.jackson.databind.exc.InvalidFormatException ife) {
+            String fieldName = ife.getPath().isEmpty() ? "unknown field" :
+                    ife.getPath().get(ife.getPath().size() - 1).getFieldName();
+            String badValue = String.valueOf(ife.getValue());
+
+            if (ife.getTargetType() != null && ife.getTargetType().isEnum()) {
+                String accepted = Arrays.stream(ife.getTargetType().getEnumConstants())
+                        .map(Object::toString)
+                        .collect(Collectors.joining(", "));
+                userMessage = String.format(
+                        "'%s' is not a valid value for '%s'. Accepted values are: %s",
+                        badValue, fieldName, accepted
+                );
+            } else {
+                userMessage = String.format("Invalid value '%s' for field '%s'", badValue, fieldName);
+            }
+        } else if (cause instanceof com.fasterxml.jackson.core.JsonParseException) {
+            userMessage = "Request body contains malformed JSON";
+        } else {
+            userMessage = "Request body is missing or unreadable";
+        }
 
         List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INVALID_JSON.toErrorModel(message)
+                new ErrorModel("INVALID_JSON", userMessage, null)
         );
 
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
@@ -176,12 +237,26 @@ public class GlobalExceptionHandler {
 
         log.warn("Invalid argument at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        String message = isDevEnvironment() ? ex.getMessage() : "Invalid argument provided";
+        String message = cleanMessage(ex);
         List<ErrorModel> errors = List.of(
                 StandardErrorCodes.INVALID_REQUEST.toErrorModel(message)
         );
 
         return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<List<ErrorModel>> handleIllegalState(
+            IllegalStateException ex,
+            HttpServletRequest request) {
+
+        log.warn("IllegalStateException at {}: {}", request.getRequestURI(), ex.getMessage());
+
+        List<ErrorModel> errors = List.of(
+                new ErrorModel("CONFLICT", cleanMessage(ex), null)
+        );
+
+        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
     }
 
     // ============================================================================
@@ -199,7 +274,6 @@ public class GlobalExceptionHandler {
         String userMessage;
         String field = null;
 
-        // Check for specific constraint violations
         if (rootCause != null && rootCause.contains("duplicate key")) {
             if (rootCause.contains("app_users_email_key")) {
                 field = "email";
@@ -227,9 +301,7 @@ public class GlobalExceptionHandler {
                 ? new ErrorModel("DUPLICATE_RESOURCE", userMessage, field)
                 : StandardErrorCodes.BUSINESS_RULE_VIOLATION.toErrorModel(userMessage);
 
-        List<ErrorModel> errors = List.of(error);
-
-        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
+        return new ResponseEntity<>(List.of(error), HttpStatus.CONFLICT);
     }
 
     @ExceptionHandler(DataIntegrityViolationException.class)
@@ -245,13 +317,9 @@ public class GlobalExceptionHandler {
         String field = null;
         String errorCode = "DUPLICATE_RESOURCE";
 
-        // Extract duplicate key information
         if (rootCause != null && rootCause.contains("duplicate key")) {
-
-            // First extract the field from the Key (field)= pattern
             field = extractFieldFromDuplicateKey(rootCause);
 
-            // Then check for specific constraints to provide better messages
             if (rootCause.contains("app_users_email_key") || (field != null && field.equalsIgnoreCase("email"))) {
                 field = "email";
                 userMessage = "A user with this email address already exists";
@@ -262,10 +330,8 @@ public class GlobalExceptionHandler {
                 field = "phoneNumber";
                 userMessage = "A user with this phone number already exists";
             } else if (field != null) {
-                // Generic message using extracted field
                 userMessage = String.format("A record with this %s already exists", field);
             } else {
-                // Fallback
                 String constraintName = extractConstraintFromError(rootCause);
                 userMessage = isDevEnvironment()
                         ? "Duplicate entry: " + constraintName
@@ -294,87 +360,57 @@ public class GlobalExceptionHandler {
                 ? new ErrorModel(errorCode, userMessage, field)
                 : new ErrorModel(errorCode, userMessage);
 
-        List<ErrorModel> errors = List.of(error);
-
         HttpStatus status = errorCode.equals("DUPLICATE_RESOURCE") ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
-        return new ResponseEntity<>(errors, status);
+        return new ResponseEntity<>(List.of(error), status);
     }
 
     private String extractConstraintFromError(String errorMessage) {
         if (errorMessage == null) return "unknown";
-
-        // Try to extract constraint name between quotes
         if (errorMessage.contains("constraint \"")) {
             int start = errorMessage.indexOf("constraint \"") + 12;
             int end = errorMessage.indexOf("\"", start);
-            if (end > start) {
-                return errorMessage.substring(start, end);
-            }
+            if (end > start) return errorMessage.substring(start, end);
         }
-
-        // Alternative format
         if (errorMessage.contains("constraint '")) {
             int start = errorMessage.indexOf("constraint '") + 12;
             int end = errorMessage.indexOf("'", start);
-            if (end > start) {
-                return errorMessage.substring(start, end);
-            }
+            if (end > start) return errorMessage.substring(start, end);
         }
-
         return "unknown";
     }
 
     private String extractFieldFromDuplicateKey(String errorMessage) {
         if (errorMessage == null) return null;
-
-        // Try to extract field from "Key (field)=" pattern
         if (errorMessage.contains("Key (") && errorMessage.contains(")=")) {
             int start = errorMessage.indexOf("Key (") + 5;
             int end = errorMessage.indexOf(")", start);
-            if (end > start) {
-                return errorMessage.substring(start, end).trim();
-            }
+            if (end > start) return errorMessage.substring(start, end).trim();
         }
-
         return null;
     }
 
     private String extractFieldFromNullConstraint(String errorMessage) {
         if (errorMessage == null) return null;
-
-        // Try to extract field from not-null constraint message
         if (errorMessage.contains("column \"")) {
             int start = errorMessage.indexOf("column \"") + 8;
             int end = errorMessage.indexOf("\"", start);
-            if (end > start) {
-                return errorMessage.substring(start, end);
-            }
+            if (end > start) return errorMessage.substring(start, end);
         }
-
-        // Alternative format
         if (errorMessage.contains("column '")) {
             int start = errorMessage.indexOf("column '") + 8;
             int end = errorMessage.indexOf("'", start);
-            if (end > start) {
-                return errorMessage.substring(start, end);
-            }
+            if (end > start) return errorMessage.substring(start, end);
         }
-
         return null;
     }
 
     private String extractFieldFromForeignKey(String errorMessage) {
         if (errorMessage == null) return null;
-
-        // Try to extract referenced table/field
         if (errorMessage.contains("on table \"")) {
             int start = errorMessage.indexOf("on table \"") + 10;
             int end = errorMessage.indexOf("\"", start);
-            if (end > start) {
-                return errorMessage.substring(start, end);
-            }
+            if (end > start) return errorMessage.substring(start, end);
         }
-
         return null;
     }
 
@@ -456,11 +492,9 @@ public class GlobalExceptionHandler {
 
         if (requestPath.startsWith("/api/")) {
             log.warn("API endpoint not found: {}", requestPath);
-
             List<ErrorModel> errors = List.of(
                     StandardErrorCodes.ENDPOINT_NOT_FOUND.toErrorModel("API endpoint not found: " + requestPath)
             );
-
             return new ResponseEntity<>(errors, HttpStatus.NOT_FOUND);
         }
 
@@ -533,30 +567,24 @@ public class GlobalExceptionHandler {
             ServletException ex,
             HttpServletRequest request) {
 
-        log.error("=== ServletException Handler Called ===");
         log.error("ServletException at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        // Check if it's wrapping a DataIntegrityViolationException
         Throwable rootCause = ex;
         while (rootCause.getCause() != null) {
             rootCause = rootCause.getCause();
-            log.error("Checking cause: {}", rootCause.getClass().getName());
             if (rootCause instanceof DataIntegrityViolationException) {
-                log.error("Found wrapped DataIntegrityViolationException!");
                 return handleDataIntegrityViolation((DataIntegrityViolationException) rootCause, request);
             }
         }
 
-        // Not a data integrity issue, treat as generic error
         String message = isDevEnvironment()
                 ? "Request processing failed: " + ex.getMessage()
                 : "An error occurred processing your request";
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                HttpStatus.INTERNAL_SERVER_ERROR
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     @ExceptionHandler(NullPointerException.class)
@@ -570,11 +598,10 @@ public class GlobalExceptionHandler {
                 ? "Null pointer error: " + getRootCauseMessage(ex)
                 : "An internal error occurred";
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                HttpStatus.INTERNAL_SERVER_ERROR
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     @ExceptionHandler(Exception.class)
@@ -582,15 +609,10 @@ public class GlobalExceptionHandler {
             Exception ex,
             HttpServletRequest request) {
 
-        log.error("=== Generic Exception Handler Called ===");
         log.error("Exception type: {}", ex.getClass().getName());
-        log.error("Unhandled exception at {}: {} - {}",
-                request.getRequestURI(),
-                ex.getClass().getName(),
-                ex.getMessage(),
-                ex);
+        log.error("Unhandled exception at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
 
-        // Check if it's a wrapped DataIntegrityViolationException
+        // Unwrap and delegate to specific handlers if wrapped
         Throwable rootCause = ex;
         while (rootCause.getCause() != null) {
             rootCause = rootCause.getCause();
@@ -599,14 +621,14 @@ public class GlobalExceptionHandler {
             }
         }
 
+        // Use cleanMessage() — strips "ExceptionClassName: " prefix for UI-friendly output
         String message = isDevEnvironment()
-                ? String.format("%s: %s", ex.getClass().getSimpleName(), ex.getMessage())
+                ? cleanMessage(ex)
                 : "An unexpected error occurred";
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                HttpStatus.INTERNAL_SERVER_ERROR
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }
