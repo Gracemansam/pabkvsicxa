@@ -1,5 +1,6 @@
 package com.lamiplus_common_api.api;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -14,5 +15,11 @@ public interface PluginDataServiceRegistry {
 
     Optional<PluginDataService> getServiceByEntity(String entityName);
 
+    Optional<PluginDataService> getService(String pluginId, String entityName);
+
+    List<PluginDataService> getPluginServices(String pluginId);
+
     boolean hasService(String entityName);
+
+    boolean hasService(String pluginId, String entityName);
 }
