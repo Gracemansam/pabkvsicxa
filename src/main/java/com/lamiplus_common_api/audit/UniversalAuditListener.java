@@ -7,6 +7,9 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.lang.reflect.Field;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -27,7 +30,7 @@ public class UniversalAuditListener {
         String currentUser = getCurrentUser();
         LocalDateTime now = LocalDateTime.now();
 
-        for (Field field : entity.getClass().getDeclaredFields()) {
+        for (Field field : getAllFields(entity.getClass())) {
             field.setAccessible(true);
 
             try {
@@ -190,4 +193,14 @@ public class UniversalAuditListener {
     private UUID getFacilityId() {
         return Utils.getFacilityIdFromContext();
     }
+
+    private List<Field> getAllFields(Class<?> type) {
+        List<Field> fields = new ArrayList<>();
+        while (type != null && type != Object.class) {
+            fields.addAll(Arrays.asList(type.getDeclaredFields()));
+            type = type.getSuperclass();
+        }
+        return fields;
+    }
+
 }

@@ -1,14 +1,10 @@
 package com.lamiplus_common_api.common;
 
-import com.lamiplus_common_api.common.Utils;
+import com.lamiplus_common_api.audit.*;
 import jakarta.persistence.*;
 import jakarta.persistence.Id;
 import lombok.*;
 import lombok.experimental.SuperBuilder;
-import org.hibernate.annotations.ColumnDefault;
-import org.springframework.data.annotation.*;
-import org.springframework.data.jpa.domain.support.AuditingEntityListener;
-
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -18,7 +14,7 @@ import java.util.UUID;
 @AllArgsConstructor
 @NoArgsConstructor
 @MappedSuperclass
-@EntityListeners(AuditingEntityListener.class)
+@EntityListeners(UniversalAuditListener.class)
 public class BaseAudit {
 
     @Id
@@ -26,47 +22,34 @@ public class BaseAudit {
     private Long id;
 
     @Column(nullable = false, columnDefinition = "uuid")
+    @AuditUUID
     private UUID uuid;
 
-    @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)
+    @AuditCreatedDate
     private LocalDateTime createdAt;
 
-    @CreatedBy
+    @AuditCreatedBy
     @Column(name = "created_by", updatable = false)
     private String createdBy;
 
-    @LastModifiedDate
+    @AuditUpdatedDate
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @LastModifiedBy
+    @AuditUpdatedBy
     @Column(name = "updated_by")
     private String updatedBy;
 
     @Column(name = "archived")
-    @ColumnDefault("0")
+    @AuditArchived
     private Integer archived = 0;
 
     @Column(name = "tenant_id", length = 50)
+    @AuditTenant
     private String tenantId;
 
     @Column(name = "facility_id")
+    @AuditFacility
     private UUID facilityId;
-
-    @PrePersist
-    public void prePersist() {
-        if (this.tenantId == null) {
-            this.tenantId = Utils.getTenantIdFromContext();
-        }
-        if (this.facilityId == null) {
-            this.facilityId = Utils.getFacilityIdFromContext();
-        }
-        if (this.uuid == null) {
-            this.uuid = UUID.randomUUID();
-        }
-        if (this.archived == null) {
-            this.archived = 0;
-        }
-    }
 }
