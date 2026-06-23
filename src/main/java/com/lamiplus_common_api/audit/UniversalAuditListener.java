@@ -42,6 +42,7 @@ public class UniversalAuditListener {
                 handleArchived(entity, field, isCreate);
                 handleTenant(entity, field, isCreate);
                 handleFacility(entity, field, isCreate);
+                handleUserId(entity, field, isCreate);
 
             } catch (IllegalAccessException e) {
                 throw new AuditProcessingException(
@@ -180,6 +181,20 @@ public class UniversalAuditListener {
         }
     }
 
+    private void handleUserId(Object entity, Field field, boolean isCreate) throws IllegalAccessException {
+        if (!field.isAnnotationPresent(AuditUserId.class) || !isCreate) return;
+
+        AuditUserId ann = field.getAnnotation(AuditUserId.class);
+        Object value = field.get(entity);
+
+        if (value == null && ann.required()) {
+            throw new IllegalStateException("UserId field '" + field.getName() + "' is required but null");
+        }
+        if (value == null) {
+            field.set(entity, getUserId());
+        }
+    }
+
     private String getCurrentUser() {
         return Utils.getCurrentUserEmail() != null && !Utils.getCurrentUserEmail().isEmpty()
                 ? Utils.getCurrentUserEmail()
@@ -192,6 +207,10 @@ public class UniversalAuditListener {
 
     private UUID getFacilityId() {
         return Utils.getFacilityIdFromContext();
+    }
+
+    private String getUserId() {
+        return Utils.getCurrentUserId();
     }
 
     private List<Field> getAllFields(Class<?> type) {

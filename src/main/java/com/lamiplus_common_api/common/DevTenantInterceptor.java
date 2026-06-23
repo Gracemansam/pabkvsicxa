@@ -27,7 +27,7 @@ public class DevTenantInterceptor implements HandlerInterceptor {
     private UUID devFacilityId;
 
     @Value("${plugin.standalone.user-id:c6b48c14-cc07-4272-9ad6-61111bbf81b7}")
-    private UUID devUserId;
+    private String devUserId;
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {

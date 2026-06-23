@@ -8,9 +8,9 @@ import java.util.UUID;
 public class TenantContextData {
     private String tenantId;
     private UUID facilityId;
-    private UUID userId;
+    private String userId;
 
-    public TenantContextData(String tenantId, UUID facilityId, UUID userId) {
+    public TenantContextData(String tenantId, UUID facilityId, String userId) {
         this.tenantId = tenantId;
         this.facilityId = facilityId;
         this.userId = userId;
@@ -19,5 +19,5 @@ public class TenantContextData {
     public String getTenantId() { return tenantId; }
     public UUID getFacilityId() { return facilityId; }
 
-    public UUID getUserId() { return userId; }
+    public String getUserId() { return userId; }
 }

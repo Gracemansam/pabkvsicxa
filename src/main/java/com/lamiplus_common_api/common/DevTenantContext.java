@@ -11,7 +11,7 @@ public class DevTenantContext {
 
     private static final ThreadLocal<TenantContextData> currentTenant = new ThreadLocal<>();
 
-    public static void setTenant(String tenantId, UUID facilityId, UUID userId) {
+    public static void setTenant(String tenantId, UUID facilityId, String userId) {
         currentTenant.set(new TenantContextData(tenantId, facilityId, userId));
     }
 
@@ -23,7 +23,7 @@ public class DevTenantContext {
         return currentTenant.get().getFacilityId();
     }
 
-    public static UUID getUserId() {
+    public static String getUserId() {
         return currentTenant.get().getUserId();
     }
 

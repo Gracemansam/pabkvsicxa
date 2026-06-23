@@ -187,6 +187,20 @@ public class Utils {
         return user != null ? user.email() : "system";
     }
 
+    public static String getCurrentUserId() {
+        UserInfo user = getCurrentUser();
+        String userId = null;
+        if (user != null){
+            return user.userId;
+        }
+        if (DevTenantContext.isSet()) {
+            userId = DevTenantContext.getUserId();
+            log.debug("User ID from dev context: {}", userId);
+            return userId;
+        }
+        throw new RuntimeException("Failed to get user ID from context");
+    }
+
     public static String getCurrentUserFullName() {
         UserInfo user = getCurrentUser();
         return user != null ? user.fullName() : null;
