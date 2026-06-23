@@ -6,11 +6,18 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hibernate.exception.ConstraintViolationException;
+import org.hibernate.exception.DataException;
+import org.hibernate.exception.JDBCConnectionException;
+import org.hibernate.exception.LockAcquisitionException;
+import org.hibernate.exception.SQLGrammarException;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -34,8 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
+
 
 @Slf4j
 @RestControllerAdvice
@@ -46,13 +52,7 @@ public class GlobalExceptionHandler {
     @Value("${spring.profiles.active:dev}")
     private String activeProfile;
 
-    // ============================================================================
-    // UTILITIES
-    // ============================================================================
 
-    private boolean isDevEnvironment() {
-        return "dev".equals(activeProfile) || "local".equals(activeProfile) || log.isDebugEnabled();
-    }
 
     private String getRootCauseMessage(Throwable ex) {
         Throwable cause = ex;
@@ -62,23 +62,10 @@ public class GlobalExceptionHandler {
         return cause.getMessage();
     }
 
-    private String extractConstraintName(ConstraintViolationException ex) {
-        String message = ex.getMessage();
-        if (message != null && message.contains("constraint")) {
-            return message.substring(0, Math.min(message.length(), 200));
-        }
-        return "Unknown constraint";
-    }
 
-    /**
-     * Strips the exception class name prefix from a message.
-     * e.g. "PluginException: Cannot install plugin" → "Cannot install plugin"
-     * e.g. "IllegalStateException: Patient already exists" → "Patient already exists"
-     */
     private String cleanMessage(Exception ex) {
         String message = ex.getMessage();
         if (message == null) return "An unexpected error occurred";
-        // Only strip if the prefix looks like a class name (no spaces before the colon)
         if (message.contains(": ")) {
             int colonIndex = message.indexOf(": ");
             String prefix = message.substring(0, colonIndex);
@@ -89,43 +76,67 @@ public class GlobalExceptionHandler {
         return message;
     }
 
+    private String extractFieldFromDuplicateKey(String msg) {
+        if (msg == null) return null;
+        if (msg.contains("Key (") && msg.contains(")=")) {
+            int start = msg.indexOf("Key (") + 5;
+            int end   = msg.indexOf(")", start);
+            if (end > start) return msg.substring(start, end).trim();
+        }
+        return null;
+    }
+
+    private String extractFieldFromNullConstraint(String msg) {
+        if (msg == null) return null;
+        for (String q : new String[]{"column \"", "column '"}) {
+            if (msg.contains(q)) {
+                int start = msg.indexOf(q) + q.length();
+                char close = q.endsWith("\"") ? '"' : '\'';
+                int end = msg.indexOf(close, start);
+                if (end > start) return msg.substring(start, end);
+            }
+        }
+        return null;
+    }
+
+    private String extractFieldFromForeignKey(String msg) {
+        if (msg == null) return null;
+        if (msg.contains("on table \"")) {
+            int start = msg.indexOf("on table \"") + 10;
+            int end   = msg.indexOf("\"", start);
+            if (end > start) return msg.substring(start, end);
+        }
+        return null;
+    }
+
     // ============================================================================
     // BUSINESS & PLUGIN EXCEPTION HANDLERS
     // ============================================================================
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<List<ErrorModel>> handleBusinessException(
-            BusinessException bex,
-            HttpServletRequest request) {
+            BusinessException ex, HttpServletRequest request) {
 
-        String errorCodes = bex.getErrors().stream()
+        String codes = ex.getErrors().stream()
                 .map(ErrorModel::getCode)
                 .collect(Collectors.joining(", "));
 
-        if (log.isDebugEnabled()) {
-            log.debug("Business exception at {}: codes=[{}], details={}",
-                    request.getRequestURI(), errorCodes, bex.getErrors());
-        } else {
-            log.warn("Business exception at {}: codes=[{}]",
-                    request.getRequestURI(), errorCodes);
-        }
+        log.warn("Business exception at {}: codes=[{}]", request.getRequestURI(), codes);
 
-        HttpStatus status = (bex.getHttpStatus() != null) ? bex.getHttpStatus() : HttpStatus.BAD_REQUEST;
-        return new ResponseEntity<>(bex.getErrors(), status);
+        HttpStatus status = ex.getHttpStatus() != null ? ex.getHttpStatus() : HttpStatus.BAD_REQUEST;
+        return new ResponseEntity<>(ex.getErrors(), status);
     }
 
     @ExceptionHandler(PluginException.class)
     public ResponseEntity<List<ErrorModel>> handlePluginException(
-            PluginException ex,
-            HttpServletRequest request) {
+            PluginException ex, HttpServletRequest request) {
 
         log.error("Plugin exception at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        List<ErrorModel> errors = List.of(
-                new ErrorModel("PLUGIN_ERROR", ex.getMessage(), null)
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("PLUGIN_ERROR", ex.getMessage(), null)),
+                HttpStatus.BAD_REQUEST
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     // ============================================================================
@@ -133,314 +144,304 @@ public class GlobalExceptionHandler {
     // ============================================================================
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<List<ErrorModel>> handleValidationException(
-            MethodArgumentNotValidException ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleValidation(
+            MethodArgumentNotValidException ex, HttpServletRequest request) {
 
-        log.warn("Validation failed at {}: {} errors", request.getRequestURI(),
-                ex.getBindingResult().getErrorCount());
+        log.warn("Validation failed at {}: {} error(s)",
+                request.getRequestURI(), ex.getBindingResult().getErrorCount());
 
-        List<ErrorModel> errorModelList = ex.getBindingResult().getFieldErrors().stream()
-                .map(fe -> {
-                    if (log.isDebugEnabled()) {
-                        log.debug("Validation error: field={}, message={}", fe.getField(), fe.getDefaultMessage());
-                    }
-                    return new ErrorModel("VALIDATION_ERROR", fe.getDefaultMessage(), fe.getField());
-                })
+        List<ErrorModel> errors = ex.getBindingResult().getFieldErrors().stream()
+                .map(fe -> new ErrorModel("VALIDATION_ERROR", fe.getDefaultMessage(), fe.getField()))
                 .collect(Collectors.toList());
 
-        return new ResponseEntity<>(errorModelList, HttpStatus.BAD_REQUEST);
+        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<List<ErrorModel>> handleMissingParameter(
-            MissingServletRequestParameterException ex,
-            HttpServletRequest request) {
+            MissingServletRequestParameterException ex, HttpServletRequest request) {
 
-        log.warn("Missing required parameter at {}: {} of type {}",
-                request.getRequestURI(), ex.getParameterName(), ex.getParameterType());
+        log.warn("Missing parameter at {}: {}", request.getRequestURI(), ex.getParameterName());
 
-        String message = isDevEnvironment()
-                ? String.format("Missing required parameter: %s (%s)", ex.getParameterName(), ex.getParameterType())
-                : "Missing required parameter: " + ex.getParameterName();
-
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.MISSING_REQUIRED_FIELD.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.MISSING_REQUIRED_FIELD
+                        .toErrorModel("Missing required parameter: " + ex.getParameterName())),
+                HttpStatus.BAD_REQUEST
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<List<ErrorModel>> handleTypeMismatch(
-            MethodArgumentTypeMismatchException ex,
-            HttpServletRequest request) {
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
 
-        log.warn("Type mismatch at {}: parameter={}, value={}",
+        log.warn("Type mismatch at {}: param={}, value={}",
                 request.getRequestURI(), ex.getName(), ex.getValue());
 
-        String message = isDevEnvironment()
-                ? String.format("Invalid value '%s' for parameter '%s'. Expected type: %s",
-                ex.getValue(), ex.getName(), ex.getRequiredType().getSimpleName())
-                : "Invalid parameter value: " + ex.getName();
-
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INVALID_INPUT_FORMAT.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INVALID_INPUT_FORMAT
+                        .toErrorModel("Invalid value for parameter: " + ex.getName())),
+                HttpStatus.BAD_REQUEST
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<List<ErrorModel>> handleInvalidJson(
-            HttpMessageNotReadableException ex,
-            HttpServletRequest request) {
+            HttpMessageNotReadableException ex, HttpServletRequest request) {
 
-        log.warn("Invalid JSON request at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Unreadable request body at {}", request.getRequestURI());
 
         String userMessage;
         Throwable cause = ex.getCause();
 
-        // ====================================================================
-        // JACKSON 3 MIGRATION (Spring Boot 4.0.6):
-        //   com.fasterxml.jackson.databind.exc.InvalidFormatException
-        //     → tools.jackson.databind.exc.InvalidFormatException
-        //   com.fasterxml.jackson.core.JsonParseException
-        //     → tools.jackson.core.exc.StreamReadException
-        // ====================================================================
-
+        // Jackson 3 (tools.jackson) — used by Spring Boot 4.x
         if (cause instanceof tools.jackson.databind.exc.InvalidFormatException ife) {
-            // Jackson 3: JsonMappingException.Reference → DatabindException.Reference
-            //            getFieldName() → getPropertyName()
-            String fieldName = ife.getPath().isEmpty() ? "unknown field" :
-                    ife.getPath().get(ife.getPath().size() - 1).getPropertyName();
-            String badValue = String.valueOf(ife.getValue());
+            String fieldName = ife.getPath().isEmpty() ? "unknown"
+                    : ife.getPath().get(ife.getPath().size() - 1).getPropertyName();
+            String badValue  = String.valueOf(ife.getValue());
 
             if (ife.getTargetType() != null && ife.getTargetType().isEnum()) {
                 String accepted = Arrays.stream(ife.getTargetType().getEnumConstants())
-                        .map(Object::toString)
-                        .collect(Collectors.joining(", "));
+                        .map(Object::toString).collect(Collectors.joining(", "));
                 userMessage = String.format(
-                        "'%s' is not a valid value for '%s'. Accepted values are: %s",
-                        badValue, fieldName, accepted
-                );
+                        "'%s' is not valid for '%s'. Accepted values: %s", badValue, fieldName, accepted);
             } else {
                 userMessage = String.format("Invalid value '%s' for field '%s'", badValue, fieldName);
             }
         } else if (cause instanceof tools.jackson.core.exc.StreamReadException) {
-            userMessage = "Request body contains malformed JSON";
+            userMessage = "The request body contains malformed JSON. Please check the format and try again.";
         } else {
-            userMessage = "Request body is missing or unreadable";
+            userMessage = "The request body is missing or could not be read.";
         }
 
-        List<ErrorModel> errors = List.of(
-                new ErrorModel("INVALID_JSON", userMessage, null)
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("INVALID_JSON", userMessage, null)),
+                HttpStatus.BAD_REQUEST
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<List<ErrorModel>> handleIllegalArgument(
-            IllegalArgumentException ex,
-            HttpServletRequest request) {
+            IllegalArgumentException ex, HttpServletRequest request) {
 
-        log.warn("Invalid argument at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Illegal argument at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        String message = cleanMessage(ex);
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INVALID_REQUEST.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INVALID_REQUEST.toErrorModel(cleanMessage(ex))),
+                HttpStatus.BAD_REQUEST
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.BAD_REQUEST);
     }
 
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<List<ErrorModel>> handleIllegalState(
-            IllegalStateException ex,
-            HttpServletRequest request) {
+            IllegalStateException ex, HttpServletRequest request) {
 
-        log.warn("IllegalStateException at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Illegal state at {}: {}", request.getRequestURI(), ex.getMessage());
 
-        List<ErrorModel> errors = List.of(
-                new ErrorModel("CONFLICT", cleanMessage(ex), null)
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("CONFLICT", cleanMessage(ex), null)),
+                HttpStatus.CONFLICT
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.CONFLICT);
     }
 
-    // ============================================================================
-    // DATABASE EXCEPTION HANDLERS
-    // ============================================================================
 
+    @ExceptionHandler(SQLGrammarException.class)
+    public ResponseEntity<List<ErrorModel>> handleSQLGrammar(
+            SQLGrammarException ex, HttpServletRequest request) {
+
+        // Log full details for the DBA/developer
+        log.error("SQLGrammarException at {} — possible missing table or schema migration. SQL state: {}. Cause: {}",
+                request.getRequestURI(), ex.getSQLState(), ex.getMessage(), ex);
+
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("SERVICE_UNAVAILABLE",
+                        "This feature is not available right now. Please try again later or contact support.", null)),
+                HttpStatus.SERVICE_UNAVAILABLE
+        );
+    }
+
+    /**
+     * Duplicate key / unique constraint.
+     */
     @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<List<ErrorModel>> handleConstraintException(
-            ConstraintViolationException ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleConstraint(
+            ConstraintViolationException ex, HttpServletRequest request) {
 
-        log.error("Constraint violation at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+        log.error("ConstraintViolationException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
 
         String rootCause = getRootCauseMessage(ex);
         String userMessage;
         String field = null;
+        String code  = "DUPLICATE_RESOURCE";
 
         if (rootCause != null && rootCause.contains("duplicate key")) {
+            field = extractFieldFromDuplicateKey(rootCause);
             if (rootCause.contains("app_users_email_key")) {
                 field = "email";
-                userMessage = "A user with this email address already exists";
+                userMessage = "A user with this email address already exists.";
             } else if (rootCause.contains("app_users_user_name_key")) {
                 field = "username";
-                userMessage = "A user with this username already exists";
+                userMessage = "A user with this username already exists.";
             } else if (rootCause.contains("app_users_phone_number_key")) {
                 field = "phoneNumber";
-                userMessage = "A user with this phone number already exists";
+                userMessage = "A user with this phone number already exists.";
             } else {
-                String constraintName = extractConstraintFromError(rootCause);
-                userMessage = isDevEnvironment()
-                        ? "Duplicate entry: " + constraintName
-                        : "This record already exists";
+                userMessage = field != null
+                        ? String.format("A record with this %s already exists.", field)
+                        : "This record already exists.";
             }
         } else {
-            String constraintName = extractConstraintName(ex);
-            userMessage = isDevEnvironment()
-                    ? "Database constraint violation: " + constraintName
-                    : "Operation violates database constraints";
+            code        = "BUSINESS_RULE_VIOLATION";
+            userMessage = "This operation cannot be completed due to a data conflict. Please review your input.";
         }
 
         ErrorModel error = field != null
-                ? new ErrorModel("DUPLICATE_RESOURCE", userMessage, field)
-                : StandardErrorCodes.BUSINESS_RULE_VIOLATION.toErrorModel(userMessage);
+                ? new ErrorModel(code, userMessage, field)
+                : new ErrorModel(code, userMessage);
 
-        return new ResponseEntity<>(List.of(error), HttpStatus.CONFLICT);
+        HttpStatus status = "DUPLICATE_RESOURCE".equals(code) ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
+        return new ResponseEntity<>(List.of(error), status);
     }
 
-    @ExceptionHandler(DataIntegrityViolationException.class)
-    public ResponseEntity<List<ErrorModel>> handleDataIntegrityViolation(
-            DataIntegrityViolationException ex,
-            HttpServletRequest request) {
+    /**
+     * Data too long, bad value for column type, etc.
+     */
+    @ExceptionHandler(DataException.class)
+    public ResponseEntity<List<ErrorModel>> handleDataException(
+            DataException ex, HttpServletRequest request) {
 
-        log.error("=== DataIntegrityViolationException Handler Called ===");
-        log.error("Data integrity violation at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+        log.error("DataException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("INVALID_DATA",
+                        "One or more values provided are invalid. Please check your input and try again.", null)),
+                HttpStatus.BAD_REQUEST
+        );
+    }
+
+    /**
+     * Database lock timeout.
+     */
+    @ExceptionHandler(LockAcquisitionException.class)
+    public ResponseEntity<List<ErrorModel>> handleLockAcquisition(
+            LockAcquisitionException ex, HttpServletRequest request) {
+
+        log.error("LockAcquisitionException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("SERVICE_UNAVAILABLE",
+                        "The system is currently busy. Please try again in a moment.", null)),
+                HttpStatus.SERVICE_UNAVAILABLE
+        );
+    }
+
+    /**
+     * Cannot reach the database.
+     */
+    @ExceptionHandler(JDBCConnectionException.class)
+    public ResponseEntity<List<ErrorModel>> handleJDBCConnection(
+            JDBCConnectionException ex, HttpServletRequest request) {
+
+        log.error("JDBCConnectionException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("SERVICE_UNAVAILABLE",
+                        "The service is temporarily unavailable. Please try again shortly.", null)),
+                HttpStatus.SERVICE_UNAVAILABLE
+        );
+    }
+
+    /**
+     * Query timeout.
+     */
+    @ExceptionHandler(QueryTimeoutException.class)
+    public ResponseEntity<List<ErrorModel>> handleQueryTimeout(
+            QueryTimeoutException ex, HttpServletRequest request) {
+
+        log.error("QueryTimeoutException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
+
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("SERVICE_UNAVAILABLE",
+                        "The request took too long to process. Please try again.", null)),
+                HttpStatus.SERVICE_UNAVAILABLE
+        );
+    }
+
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<List<ErrorModel>> handleDataIntegrity(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+
+        log.error("DataIntegrityViolationException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
 
         String rootCause = getRootCauseMessage(ex);
         String userMessage;
         String field = null;
-        String errorCode = "DUPLICATE_RESOURCE";
+        String code  = "DUPLICATE_RESOURCE";
+        HttpStatus status = HttpStatus.CONFLICT;
 
         if (rootCause != null && rootCause.contains("duplicate key")) {
             field = extractFieldFromDuplicateKey(rootCause);
 
-            if (rootCause.contains("app_users_email_key") || (field != null && field.equalsIgnoreCase("email"))) {
+            if (rootCause.contains("app_users_email_key")) {
                 field = "email";
-                userMessage = "A user with this email address already exists";
-            } else if (rootCause.contains("app_users_user_name_key") || (field != null && field.equalsIgnoreCase("user_name"))) {
+                userMessage = "A user with this email address already exists.";
+            } else if (rootCause.contains("app_users_user_name_key")) {
                 field = "username";
-                userMessage = "A user with this username already exists";
-            } else if (rootCause.contains("app_users_phone_number_key") || (field != null && field.equalsIgnoreCase("phone_number"))) {
+                userMessage = "A user with this username already exists.";
+            } else if (rootCause.contains("app_users_phone_number_key")) {
                 field = "phoneNumber";
-                userMessage = "A user with this phone number already exists";
-            } else if (field != null) {
-                userMessage = String.format("A record with this %s already exists", field);
+                userMessage = "A user with this phone number already exists.";
             } else {
-                String constraintName = extractConstraintFromError(rootCause);
-                userMessage = isDevEnvironment()
-                        ? "Duplicate entry: " + constraintName
-                        : "This record already exists in the system";
+                userMessage = field != null
+                        ? String.format("A record with this %s already exists.", field)
+                        : "This record already exists in the system.";
             }
+
         } else if (rootCause != null && rootCause.contains("violates foreign key constraint")) {
-            errorCode = "FOREIGN_KEY_VIOLATION";
-            field = extractFieldFromForeignKey(rootCause);
+            code      = "REFERENCE_ERROR";
+            status    = HttpStatus.BAD_REQUEST;
+            field     = extractFieldFromForeignKey(rootCause);
             userMessage = field != null
-                    ? String.format("The referenced %s does not exist", field)
-                    : "Cannot perform this operation because it references data that doesn't exist";
+                    ? String.format("The referenced %s could not be found. Please check your selection.", field)
+                    : "This operation references data that no longer exists.";
+
         } else if (rootCause != null && rootCause.contains("violates not-null constraint")) {
-            errorCode = "NULL_VALUE_NOT_ALLOWED";
-            field = extractFieldFromNullConstraint(rootCause);
+            code      = "MISSING_REQUIRED_FIELD";
+            status    = HttpStatus.BAD_REQUEST;
+            field     = extractFieldFromNullConstraint(rootCause);
             userMessage = field != null
-                    ? String.format("Field '%s' is required and cannot be empty", field)
-                    : "Required field is missing";
+                    ? String.format("The field '%s' is required.", field)
+                    : "A required field is missing.";
+
         } else {
-            errorCode = "DATA_INTEGRITY_VIOLATION";
-            userMessage = isDevEnvironment()
-                    ? "Database constraint violation: " + rootCause
-                    : "This operation violates database constraints";
+            code      = "DATA_ERROR";
+            status    = HttpStatus.BAD_REQUEST;
+            userMessage = "The data provided conflicts with existing records. Please review your input.";
         }
 
         ErrorModel error = field != null
-                ? new ErrorModel(errorCode, userMessage, field)
-                : new ErrorModel(errorCode, userMessage);
+                ? new ErrorModel(code, userMessage, field)
+                : new ErrorModel(code, userMessage);
 
-        HttpStatus status = errorCode.equals("DUPLICATE_RESOURCE") ? HttpStatus.CONFLICT : HttpStatus.BAD_REQUEST;
         return new ResponseEntity<>(List.of(error), status);
     }
 
-    private String extractConstraintFromError(String errorMessage) {
-        if (errorMessage == null) return "unknown";
-        if (errorMessage.contains("constraint \"")) {
-            int start = errorMessage.indexOf("constraint \"") + 12;
-            int end = errorMessage.indexOf("\"", start);
-            if (end > start) return errorMessage.substring(start, end);
-        }
-        if (errorMessage.contains("constraint '")) {
-            int start = errorMessage.indexOf("constraint '") + 12;
-            int end = errorMessage.indexOf("'", start);
-            if (end > start) return errorMessage.substring(start, end);
-        }
-        return "unknown";
-    }
-
-    private String extractFieldFromDuplicateKey(String errorMessage) {
-        if (errorMessage == null) return null;
-        if (errorMessage.contains("Key (") && errorMessage.contains(")=")) {
-            int start = errorMessage.indexOf("Key (") + 5;
-            int end = errorMessage.indexOf(")", start);
-            if (end > start) return errorMessage.substring(start, end).trim();
-        }
-        return null;
-    }
-
-    private String extractFieldFromNullConstraint(String errorMessage) {
-        if (errorMessage == null) return null;
-        if (errorMessage.contains("column \"")) {
-            int start = errorMessage.indexOf("column \"") + 8;
-            int end = errorMessage.indexOf("\"", start);
-            if (end > start) return errorMessage.substring(start, end);
-        }
-        if (errorMessage.contains("column '")) {
-            int start = errorMessage.indexOf("column '") + 8;
-            int end = errorMessage.indexOf("'", start);
-            if (end > start) return errorMessage.substring(start, end);
-        }
-        return null;
-    }
-
-    private String extractFieldFromForeignKey(String errorMessage) {
-        if (errorMessage == null) return null;
-        if (errorMessage.contains("on table \"")) {
-            int start = errorMessage.indexOf("on table \"") + 10;
-            int end = errorMessage.indexOf("\"", start);
-            if (end > start) return errorMessage.substring(start, end);
-        }
-        return null;
-    }
-
+    /**
+     * Catch-all for any remaining Spring DataAccessException subtype not handled above.
+     */
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<List<ErrorModel>> handleDataAccess(
-            DataAccessException ex,
-            HttpServletRequest request) {
+            DataAccessException ex, HttpServletRequest request) {
 
-        log.error("Database error at {}", request.getRequestURI(), ex);
+        // Log everything — nothing technical goes to the client
+        log.error("DataAccessException [{}] at {}: {}",
+                ex.getClass().getSimpleName(), request.getRequestURI(), ex.getMessage(), ex);
 
-        String rootCause = getRootCauseMessage(ex);
-        String message = isDevEnvironment()
-                ? "Database operation failed: " + (rootCause != null ? rootCause : ex.getMessage())
-                : "Database operation failed";
-
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.DATABASE_ERROR.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(new ErrorModel("SERVICE_UNAVAILABLE",
+                        "A database error occurred. Please try again or contact support if the problem persists.", null)),
+                HttpStatus.SERVICE_UNAVAILABLE
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.INTERNAL_SERVER_ERROR);
     }
 
     // ============================================================================
@@ -449,44 +450,39 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<List<ErrorModel>> handleBadCredentials(
-            BadCredentialsException ex,
-            HttpServletRequest request) {
+            BadCredentialsException ex, HttpServletRequest request) {
 
-        log.warn("Bad credentials at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Bad credentials at {}", request.getRequestURI());
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INVALID_CREDENTIALS.toErrorModel()
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INVALID_CREDENTIALS.toErrorModel()),
+                HttpStatus.UNAUTHORIZED
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.UNAUTHORIZED);
     }
 
     @ExceptionHandler(LockedException.class)
-    public ResponseEntity<List<ErrorModel>> handleLockedException(
-            LockedException ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleLocked(
+            LockedException ex, HttpServletRequest request) {
 
-        log.warn("Account locked at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Account locked at {}", request.getRequestURI());
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.ACCOUNT_LOCKED.toErrorModel()
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.ACCOUNT_LOCKED.toErrorModel()),
+                HttpStatus.FORBIDDEN
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.FORBIDDEN);
     }
 
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<List<ErrorModel>> handleAccessDenied(
-            AccessDeniedException ex,
-            HttpServletRequest request) {
+            AccessDeniedException ex, HttpServletRequest request) {
 
-        log.warn("Access denied at {}: {}", request.getRequestURI(), ex.getMessage());
+        log.warn("Access denied at {}", request.getRequestURI());
 
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.INSUFFICIENT_PRIVILEGES.toErrorModel("You don't have permission to perform this action")
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.INSUFFICIENT_PRIVILEGES
+                        .toErrorModel("You do not have permission to perform this action.")),
+                HttpStatus.FORBIDDEN
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.FORBIDDEN);
     }
 
     // ============================================================================
@@ -494,29 +490,26 @@ public class GlobalExceptionHandler {
     // ============================================================================
 
     @ExceptionHandler(NoResourceFoundException.class)
-    public ResponseEntity<?> handleNoResourceFoundException(
-            NoResourceFoundException ex,
-            HttpServletRequest request) throws IOException {
+    public ResponseEntity<?> handleNoResource(
+            NoResourceFoundException ex, HttpServletRequest request) throws IOException {
 
-        String requestPath = request.getRequestURI();
+        String path = request.getRequestURI();
 
-        if (requestPath.startsWith("/api/")) {
-            log.warn("API endpoint not found: {}", requestPath);
-            List<ErrorModel> errors = List.of(
-                    StandardErrorCodes.ENDPOINT_NOT_FOUND.toErrorModel("API endpoint not found: " + requestPath)
+        if (path.startsWith("/api/")) {
+            log.warn("API endpoint not found: {}", path);
+            return new ResponseEntity<>(
+                    List.of(StandardErrorCodes.ENDPOINT_NOT_FOUND
+                            .toErrorModel("The requested endpoint does not exist.")),
+                    HttpStatus.NOT_FOUND
             );
-            return new ResponseEntity<>(errors, HttpStatus.NOT_FOUND);
         }
 
+        // SPA fallback — serve index.html for client-side routes
         try {
-            Resource indexResource = new ClassPathResource("static/index.html");
-            if (indexResource.exists()) {
-                String content = StreamUtils.copyToString(
-                        indexResource.getInputStream(),
-                        StandardCharsets.UTF_8
-                );
-                return ResponseEntity
-                        .status(HttpStatus.OK)
+            Resource index = new ClassPathResource("static/index.html");
+            if (index.exists()) {
+                String content = StreamUtils.copyToString(index.getInputStream(), StandardCharsets.UTF_8);
+                return ResponseEntity.ok()
                         .contentType(MediaType.TEXT_HTML)
                         .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate")
                         .body(content);
@@ -525,119 +518,102 @@ public class GlobalExceptionHandler {
             log.error("Failed to load index.html", e);
         }
 
-        return ResponseEntity
-                .status(HttpStatus.FOUND)
-                .header(HttpHeaders.LOCATION, "/")
-                .build();
+        return ResponseEntity.status(HttpStatus.FOUND).header(HttpHeaders.LOCATION, "/").build();
     }
 
     @ExceptionHandler(NoHandlerFoundException.class)
-    public ResponseEntity<List<ErrorModel>> handleNoHandlerFound(
-            NoHandlerFoundException ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleNoHandler(
+            NoHandlerFoundException ex, HttpServletRequest request) {
 
-        log.warn("No handler found at {}: {} {}", request.getRequestURI(), ex.getHttpMethod(), ex.getRequestURL());
+        log.warn("No handler at {}: {} {}", request.getRequestURI(), ex.getHttpMethod(), ex.getRequestURL());
 
-        String message = isDevEnvironment()
-                ? String.format("No handler for %s %s", ex.getHttpMethod(), ex.getRequestURL())
-                : "Endpoint not found";
-
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.ENDPOINT_NOT_FOUND.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.ENDPOINT_NOT_FOUND.toErrorModel("Endpoint not found.")),
+                HttpStatus.NOT_FOUND
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.NOT_FOUND);
     }
 
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<List<ErrorModel>> handleMethodNotSupported(
-            HttpRequestMethodNotSupportedException ex,
-            HttpServletRequest request) {
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
 
         log.warn("Method not supported at {}: {}", request.getRequestURI(), ex.getMethod());
 
-        String message = isDevEnvironment()
-                ? String.format("Method %s not supported. Supported methods: %s",
-                ex.getMethod(), String.join(", ", ex.getSupportedMethods()))
-                : "HTTP method not allowed";
-
-        List<ErrorModel> errors = List.of(
-                StandardErrorCodes.METHOD_NOT_ALLOWED.toErrorModel(message)
+        return new ResponseEntity<>(
+                List.of(StandardErrorCodes.METHOD_NOT_ALLOWED.toErrorModel("HTTP method not allowed.")),
+                HttpStatus.METHOD_NOT_ALLOWED
         );
-
-        return new ResponseEntity<>(errors, HttpStatus.METHOD_NOT_ALLOWED);
     }
 
-    // ============================================================================
-    // NULL POINTER & CATCH-ALL EXCEPTION HANDLERS
-    // ============================================================================
+
 
     @ExceptionHandler(ServletException.class)
-    public ResponseEntity<List<ErrorModel>> handleServletException(
-            ServletException ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleServlet(
+            ServletException ex, HttpServletRequest request) {
 
-        log.error("ServletException at {}: {}", request.getRequestURI(), ex.getMessage());
-
-        Throwable rootCause = ex;
-        while (rootCause.getCause() != null) {
-            rootCause = rootCause.getCause();
-            if (rootCause instanceof DataIntegrityViolationException) {
-                return handleDataIntegrityViolation((DataIntegrityViolationException) rootCause, request);
+        // Unwrap and delegate if a known DB exception is wrapped inside
+        Throwable cause = ex;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+            if (cause instanceof DataIntegrityViolationException div) {
+                return handleDataIntegrity(div, request);
+            }
+            if (cause instanceof SQLGrammarException sqle) {
+                return handleSQLGrammar(sqle, request);
+            }
+            if (cause instanceof DataAccessException dae) {
+                return handleDataAccess(dae, request);
             }
         }
 
-        String message = isDevEnvironment()
-                ? "Request processing failed: " + ex.getMessage()
-                : "An error occurred processing your request";
+        log.error("ServletException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
 
         return new ResponseEntity<>(
-                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(
+                        "An error occurred while processing your request. Please try again.")),
                 HttpStatus.INTERNAL_SERVER_ERROR
         );
     }
 
     @ExceptionHandler(NullPointerException.class)
     public ResponseEntity<List<ErrorModel>> handleNullPointer(
-            NullPointerException ex,
-            HttpServletRequest request) {
+            NullPointerException ex, HttpServletRequest request) {
 
         log.error("NullPointerException at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
 
-        String message = isDevEnvironment()
-                ? "Null pointer error: " + getRootCauseMessage(ex)
-                : "An internal error occurred";
-
         return new ResponseEntity<>(
-                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(
+                        "An unexpected error occurred. Please try again or contact support.")),
                 HttpStatus.INTERNAL_SERVER_ERROR
         );
     }
 
+
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<List<ErrorModel>> handleException(
-            Exception ex,
-            HttpServletRequest request) {
+    public ResponseEntity<List<ErrorModel>> handleAll(
+            Exception ex, HttpServletRequest request) {
 
-        log.error("Exception type: {}", ex.getClass().getName());
-        log.error("Unhandled exception at {}: {}", request.getRequestURI(), ex.getMessage(), ex);
-
-        // Unwrap and delegate to specific handlers if wrapped
-        Throwable rootCause = ex;
-        while (rootCause.getCause() != null) {
-            rootCause = rootCause.getCause();
-            if (rootCause instanceof DataIntegrityViolationException) {
-                return handleDataIntegrityViolation((DataIntegrityViolationException) rootCause, request);
+        // Unwrap wrapped DB exceptions before giving up
+        Throwable cause = ex;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+            if (cause instanceof DataIntegrityViolationException div) {
+                return handleDataIntegrity(div, request);
+            }
+            if (cause instanceof SQLGrammarException sqle) {
+                return handleSQLGrammar(sqle, request);
+            }
+            if (cause instanceof DataAccessException dae) {
+                return handleDataAccess(dae, request);
             }
         }
 
-        // Use cleanMessage() — strips "ExceptionClassName: " prefix for UI-friendly output
-        String message = isDevEnvironment()
-                ? cleanMessage(ex)
-                : "An unexpected error occurred";
+        log.error("Unhandled exception [{}] at {}: {}",
+                ex.getClass().getName(), request.getRequestURI(), ex.getMessage(), ex);
 
         return new ResponseEntity<>(
-                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(message)),
+                List.of(StandardErrorCodes.INTERNAL_ERROR.toErrorModel(
+                        "An unexpected error occurred. Please try again or contact support.")),
                 HttpStatus.INTERNAL_SERVER_ERROR
         );
     }
