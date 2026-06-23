@@ -26,14 +26,22 @@ public class DevTenantInterceptor implements HandlerInterceptor {
     @Value("${plugin.standalone.facility-id:c6b48c14-cc07-4272-9ad6-61111bbf81b7}")
     private UUID devFacilityId;
 
+    @Value("${plugin.standalone.user-id:c6b48c14-cc07-4272-9ad6-61111bbf81b7}")
+    private UUID devUserId;
+
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         log.debug("DevTenantInterceptor: Setting tenant to {}", devTenantId);
         log.debug("DevFacilityInterceptor: Setting tenant to {}", devFacilityId);
 
-        DevTenantContext.setTenant(devTenantId, devFacilityId);
+        log.debug("DevUserInterceptor: Setting tenant to {}", devUserId);
+
+
+        DevTenantContext.setTenant(devTenantId, devFacilityId, devUserId);
         log.debug("DevTenantContext.getTenantId(): {}", DevTenantContext.getTenantId());
         log.debug("DevTenantContext.getFacilityId(): {}", DevTenantContext.getFacilityId());
+        log.debug("DevTenantContext.getUserId(): {}", DevTenantContext.getUserId());
+
 
         return true;
     }

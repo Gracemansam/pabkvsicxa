@@ -22,6 +22,9 @@ public class DevTenantInitializer {
     @Value("${plugin.standalone.facility-id:c6b48c14-cc07-4272-9ad6-61111bbf81b7}")
     private UUID devFacilityId;
 
+    @Value("${plugin.standalone.user-id:c6b48c14-cc07-4272-9ad6-61111bbf81b7}")
+    private UUID devUserId;
+
     @PostConstruct
     public void initialize() {
         log.info("════════════════════════════════════════");
@@ -30,11 +33,13 @@ public class DevTenantInitializer {
         log.info("Dev Facility ID from config: {}", devFacilityId);
 
 
-        DevTenantContext.setTenant(devTenantId, devFacilityId);
+        DevTenantContext.setTenant(devTenantId, devFacilityId, devUserId);
 
         log.info("DevTenantContext.isSet(): {}", DevTenantContext.isSet());
         log.info("DevTenantContext.getTenantId(): {}", DevTenantContext.getTenantId());
         log.info("DevTenantContext.getFacilityId(): {}", DevTenantContext.getFacilityId());
+        log.info("DevTenantContext.getUserId(): {}", DevTenantContext.getUserId());
+
         log.info("════════════════════════════════════════");
     }
 }
